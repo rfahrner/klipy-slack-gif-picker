@@ -10,7 +10,6 @@ const klipyApiKey = process.env.KLIPY_API_KEY;
 const slackBotToken = process.env.SLACK_BOT_TOKEN;
 const slackAppToken = process.env.SLACK_APP_TOKEN;
 const BATCH_SIZE = 9;
-const ROW_SIZE = 3;
 
 if (!klipyApiKey) throw new Error('Missing KLIPY_API_KEY');
 if (!slackBotToken) throw new Error('Missing SLACK_BOT_TOKEN');
@@ -18,7 +17,7 @@ if (!slackAppToken) throw new Error('Missing SLACK_APP_TOKEN');
 
 const web = express();
 web.get('/health', (_req, res) => {
-  res.json({ ok: true, slack: 'socket-mode', picker: 'native-inline-compact' });
+  res.json({ ok: true, slack: 'socket-mode', picker: 'modal' });
 });
 
 type PickerMode = 'recent' | 'search';
@@ -50,37 +49,8 @@ function safeLabel(value: string, fallback = 'GIF') {
   return (clean || fallback).slice(0, 140);
 }
 
-function makeCard(session: PickerSession, gif: KlipyGif, index: number): any {
-  return {
-    type: 'card',
-    block_id: `gif-card-${session.id}-${index}`,
-    title: {
-      type: 'plain_text',
-      text: 'GIF',
-      emoji: true
-    },
-    hero_image: {
-      type: 'image',
-      image_url: gif.previewUrl || gif.url,
-      alt_text: safeLabel(gif.title, 'KLIPY GIF')
-    },
-    actions: [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: 'Select', emoji: true },
-        action_id: 'gif_preview',
-        value: JSON.stringify({ sessionId: session.id, index })
-      }
-    ]
-  };
-}
-
-function renderPickerBlocks(session: PickerSession): any[] {
+function pickerView(session: PickerSession): any {
   const blocks: any[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: 'KLIPY GIFs', emoji: true }
-    },
     {
       type: 'input',
       block_id: `gif-search-${session.id}-${Date.now()}`,
@@ -89,24 +59,23 @@ function renderPickerBlocks(session: PickerSession): any[] {
       label: { type: 'plain_text', text: 'Search', emoji: true },
       element: {
         type: 'plain_text_input',
-        action_id: 'gif_search',
+        action_id: 'modal_gif_search',
         initial_value: session.query,
         placeholder: { type: 'plain_text', text: 'Search GIFs and press Enter' },
         dispatch_action_config: { trigger_actions_on: ['on_enter_pressed'] }
       }
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          session.mode === 'recent'
+            ? '*Recently used*'
+            : `*Results for:* ${session.query.replace(/[<>]/g, '')}`
+      }
     }
   ];
-
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text:
-        session.mode === 'recent'
-          ? '*Recently used*'
-          : `*Results for:* ${session.query.replace(/[<>]/g, '')}`
-    }
-  });
 
   if (!session.gifs.length) {
     blocks.push({
@@ -122,26 +91,39 @@ function renderPickerBlocks(session: PickerSession): any[] {
       ]
     });
   } else {
-    // Three 3-card carousels per batch gives the closest native Slack approximation
-    // to a compact 3x3 GIF grid while staying entirely inside the desktop app.
-    for (let start = 0; start < session.gifs.length; start += ROW_SIZE) {
-      const row = session.gifs.slice(start, start + ROW_SIZE);
+    session.gifs.forEach((gif, index) => {
       blocks.push({
-        type: 'carousel',
-        block_id: `gif-row-${session.id}-${start}-${Date.now()}`,
-        elements: row.map((gif, offset) => makeCard(session, gif, start + offset))
+        type: 'image',
+        block_id: `gif-image-${session.id}-${index}-${Date.now()}`,
+        image_url: gif.previewUrl || gif.url,
+        alt_text: safeLabel(gif.title, `GIF ${index + 1}`)
       });
-    }
+
+      // Slack image blocks are display-only and cannot carry action_id.
+      // Keep the unavoidable interaction as small as possible.
+      blocks.push({
+        type: 'actions',
+        block_id: `gif-open-${session.id}-${index}-${Date.now()}`,
+        elements: [
+          {
+            type: 'button',
+            action_id: 'modal_gif_preview',
+            value: JSON.stringify({ sessionId: session.id, index }),
+            text: { type: 'plain_text', text: 'Open', emoji: true }
+          }
+        ]
+      });
+    });
   }
 
-  if (session.hasMore) {
+  if (session.hasMore && session.gifs.length < 36) {
     blocks.push({
       type: 'actions',
       block_id: `gif-more-${session.id}-${Date.now()}`,
       elements: [
         {
           type: 'button',
-          action_id: 'gif_load_more',
+          action_id: 'modal_gif_load_more',
           value: session.id,
           text: { type: 'plain_text', text: 'Load 9 more', emoji: true }
         }
@@ -154,7 +136,42 @@ function renderPickerBlocks(session: PickerSession): any[] {
     elements: [{ type: 'mrkdwn', text: '_Powered by KLIPY_' }]
   });
 
-  return blocks;
+  return {
+    type: 'modal',
+    callback_id: 'klipy_picker_modal',
+    private_metadata: session.id,
+    title: { type: 'plain_text', text: 'KLIPY GIFs' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks
+  };
+}
+
+function previewView(session: PickerSession, index: number): any {
+  const gif = session.gifs[index];
+  return {
+    type: 'modal',
+    callback_id: 'gif_preview_modal',
+    private_metadata: JSON.stringify({
+      sessionId: session.id,
+      index,
+      channelId: session.channelId,
+      userId: session.userId
+    }),
+    title: { type: 'plain_text', text: 'GIF Preview' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    submit: { type: 'plain_text', text: 'Send GIF' },
+    blocks: [
+      {
+        type: 'image',
+        image_url: gif.url,
+        alt_text: safeLabel(gif.title, 'KLIPY GIF preview')
+      },
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '_Powered by KLIPY_' }]
+      }
+    ]
+  };
 }
 
 async function loadFirstBatch(session: PickerSession) {
@@ -211,7 +228,7 @@ const slack = new App({
   socketMode: true
 });
 
-slack.command('/klipy-gif', async ({ command, ack, respond }) => {
+slack.command('/klipy-gif', async ({ command, ack, client }) => {
   await ack();
   cleanupSessions();
 
@@ -233,32 +250,26 @@ slack.command('/klipy-gif', async ({ command, ack, respond }) => {
 
   try {
     await loadFirstBatch(session);
-    await respond({
-      response_type: 'ephemeral',
-      text: query ? `KLIPY GIF results for ${query}` : 'KLIPY GIF picker',
-      blocks: renderPickerBlocks(session)
-    } as any);
-  } catch (error) {
-    console.error(error);
-    await respond({
-      response_type: 'ephemeral',
-      text: 'KLIPY search failed. Check the terminal for the error.'
+    await client.views.open({
+      trigger_id: command.trigger_id,
+      view: pickerView(session)
     });
+  } catch (error) {
+    console.error('Failed to open KLIPY picker:', error);
   }
 });
 
-slack.action('gif_search', async ({ ack, action, body, respond }) => {
+slack.action('modal_gif_search', async ({ ack, action, body, client }) => {
   await ack();
 
-  const anyAction = action as any;
-  const query = String(anyAction.value ?? '').trim();
-  const blockId = String((body as any).actions?.[0]?.block_id ?? '');
-  const match = blockId.match(/^gif-search-([0-9a-f-]{36})-/i);
-  if (!match) return;
+  const view = (body as any).view;
+  if (!view?.id) return;
 
-  const session = sessions.get(match[1]);
+  const sessionId = String(view.private_metadata ?? '');
+  const session = sessions.get(sessionId);
   if (!session || session.userId !== (body as any).user?.id) return;
 
+  const query = String((action as any).value ?? '').trim();
   session.query = query;
   session.mode = query ? 'search' : 'recent';
   session.page = 1;
@@ -269,49 +280,40 @@ slack.action('gif_search', async ({ ack, action, body, respond }) => {
 
   try {
     await loadFirstBatch(session);
-    await respond({
-      replace_original: true,
-      response_type: 'ephemeral',
-      text: query ? `KLIPY GIF results for ${query}` : 'KLIPY GIF picker',
-      blocks: renderPickerBlocks(session)
-    } as any);
-  } catch (error) {
-    console.error(error);
-    await respond({
-      replace_original: false,
-      response_type: 'ephemeral',
-      text: 'Search failed. Try again.'
+    await client.views.update({
+      view_id: view.id,
+      hash: view.hash,
+      view: pickerView(session)
     });
+  } catch (error) {
+    console.error('Modal search failed:', error);
   }
 });
 
-slack.action('gif_load_more', async ({ ack, action, body, respond }) => {
+slack.action('modal_gif_load_more', async ({ ack, body, client }) => {
   await ack();
 
-  const sessionId = String((action as any).value ?? '');
+  const view = (body as any).view;
+  if (!view?.id) return;
+
+  const sessionId = String(view.private_metadata ?? '');
   const session = sessions.get(sessionId);
   if (!session || session.userId !== (body as any).user?.id) return;
 
   try {
     await loadMore(session);
     session.createdAt = Date.now();
-    await respond({
-      replace_original: true,
-      response_type: 'ephemeral',
-      text: session.query ? `KLIPY GIF results for ${session.query}` : 'KLIPY GIF picker',
-      blocks: renderPickerBlocks(session)
-    } as any);
-  } catch (error) {
-    console.error(error);
-    await respond({
-      replace_original: false,
-      response_type: 'ephemeral',
-      text: 'Could not load more GIFs.'
+    await client.views.update({
+      view_id: view.id,
+      hash: view.hash,
+      view: pickerView(session)
     });
+  } catch (error) {
+    console.error('Could not load more GIFs:', error);
   }
 });
 
-slack.action('gif_preview', async ({ ack, action, body, client }) => {
+slack.action('modal_gif_preview', async ({ ack, action, body, client }) => {
   await ack();
 
   let payload: { sessionId: string; index: number };
@@ -328,33 +330,14 @@ slack.action('gif_preview', async ({ ack, action, body, client }) => {
   const triggerId = (body as any).trigger_id;
   if (!triggerId) return;
 
-  await client.views.open({
-    trigger_id: triggerId,
-    view: {
-      type: 'modal',
-      callback_id: 'gif_preview_modal',
-      private_metadata: JSON.stringify({
-        sessionId: session.id,
-        index: payload.index,
-        channelId: session.channelId,
-        userId: session.userId
-      }),
-      title: { type: 'plain_text', text: 'GIF Preview' },
-      close: { type: 'plain_text', text: 'Cancel' },
-      submit: { type: 'plain_text', text: 'Send GIF' },
-      blocks: [
-        {
-          type: 'image',
-          image_url: gif.url,
-          alt_text: safeLabel(gif.title, 'KLIPY GIF preview')
-        },
-        {
-          type: 'context',
-          elements: [{ type: 'mrkdwn', text: '_Powered by KLIPY_' }]
-        }
-      ]
-    } as any
-  });
+  try {
+    await client.views.push({
+      trigger_id: triggerId,
+      view: previewView(session, payload.index)
+    });
+  } catch (error) {
+    console.error('Could not open GIF preview:', error);
+  }
 });
 
 slack.view('gif_preview_modal', async ({ ack, view, client }) => {
@@ -398,7 +381,7 @@ slack.view('gif_preview_modal', async ({ ack, view, client }) => {
 async function start() {
   web.listen(port, () => console.log(`Health check: http://localhost:${port}/health`));
   await slack.start();
-  console.log('⚡ Slack Socket Mode connected — compact 3x3 picker ready');
+  console.log('⚡ Slack Socket Mode connected — modal picker ready');
 }
 
 start().catch((error) => {
