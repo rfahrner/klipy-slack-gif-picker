@@ -9,6 +9,8 @@ const port = Number(process.env.PORT ?? 3000);
 const klipyApiKey = process.env.KLIPY_API_KEY;
 const slackBotToken = process.env.SLACK_BOT_TOKEN;
 const slackAppToken = process.env.SLACK_APP_TOKEN;
+const BATCH_SIZE = 9;
+const ROW_SIZE = 3;
 
 if (!klipyApiKey) throw new Error('Missing KLIPY_API_KEY');
 if (!slackBotToken) throw new Error('Missing SLACK_BOT_TOKEN');
@@ -16,7 +18,7 @@ if (!slackAppToken) throw new Error('Missing SLACK_APP_TOKEN');
 
 const web = express();
 web.get('/health', (_req, res) => {
-  res.json({ ok: true, slack: 'socket-mode', picker: 'native-inline' });
+  res.json({ ok: true, slack: 'socket-mode', picker: 'native-inline-compact' });
 });
 
 type PickerMode = 'recent' | 'search';
@@ -54,7 +56,7 @@ function makeCard(session: PickerSession, gif: KlipyGif, index: number): any {
     block_id: `gif-card-${session.id}-${index}`,
     title: {
       type: 'plain_text',
-      text: safeLabel(gif.title, `GIF ${index + 1}`),
+      text: 'GIF',
       emoji: true
     },
     hero_image: {
@@ -65,7 +67,7 @@ function makeCard(session: PickerSession, gif: KlipyGif, index: number): any {
     actions: [
       {
         type: 'button',
-        text: { type: 'plain_text', text: 'Preview', emoji: true },
+        text: { type: 'plain_text', text: 'Select', emoji: true },
         action_id: 'gif_preview',
         value: JSON.stringify({ sessionId: session.id, index })
       }
@@ -120,12 +122,14 @@ function renderPickerBlocks(session: PickerSession): any[] {
       ]
     });
   } else {
-    for (let start = 0; start < session.gifs.length; start += 10) {
-      const chunk = session.gifs.slice(start, start + 10);
+    // Three 3-card carousels per batch gives the closest native Slack approximation
+    // to a compact 3x3 GIF grid while staying entirely inside the desktop app.
+    for (let start = 0; start < session.gifs.length; start += ROW_SIZE) {
+      const row = session.gifs.slice(start, start + ROW_SIZE);
       blocks.push({
         type: 'carousel',
-        block_id: `gif-carousel-${session.id}-${start}-${Date.now()}`,
-        elements: chunk.map((gif, offset) => makeCard(session, gif, start + offset))
+        block_id: `gif-row-${session.id}-${start}-${Date.now()}`,
+        elements: row.map((gif, offset) => makeCard(session, gif, start + offset))
       });
     }
   }
@@ -139,7 +143,7 @@ function renderPickerBlocks(session: PickerSession): any[] {
           type: 'button',
           action_id: 'gif_load_more',
           value: session.id,
-          text: { type: 'plain_text', text: 'Load 20 more', emoji: true }
+          text: { type: 'plain_text', text: 'Load 9 more', emoji: true }
         }
       ]
     });
@@ -155,7 +159,7 @@ function renderPickerBlocks(session: PickerSession): any[] {
 
 async function loadFirstBatch(session: PickerSession) {
   if (session.mode === 'recent') {
-    const result = getRecentGifs(session.userId, 0, 20);
+    const result = getRecentGifs(session.userId, 0, BATCH_SIZE);
     session.gifs = result.gifs;
     session.recentOffset = result.gifs.length;
     session.hasMore = result.hasMore;
@@ -166,7 +170,7 @@ async function loadFirstBatch(session: PickerSession) {
     klipyApiKey,
     session.query,
     1,
-    20,
+    BATCH_SIZE,
     session.userId,
     'US',
     'medium'
@@ -180,7 +184,7 @@ async function loadMore(session: PickerSession) {
   if (!session.hasMore) return;
 
   if (session.mode === 'recent') {
-    const result = getRecentGifs(session.userId, session.recentOffset, 20);
+    const result = getRecentGifs(session.userId, session.recentOffset, BATCH_SIZE);
     session.gifs.push(...result.gifs);
     session.recentOffset += result.gifs.length;
     session.hasMore = result.hasMore;
@@ -191,7 +195,7 @@ async function loadMore(session: PickerSession) {
     klipyApiKey,
     session.query,
     session.page,
-    20,
+    BATCH_SIZE,
     session.userId,
     'US',
     'medium'
@@ -336,17 +340,13 @@ slack.action('gif_preview', async ({ ack, action, body, client }) => {
         userId: session.userId
       }),
       title: { type: 'plain_text', text: 'GIF Preview' },
-      close: { type: 'plain_text', text: 'Back' },
+      close: { type: 'plain_text', text: 'Cancel' },
       submit: { type: 'plain_text', text: 'Send GIF' },
       blocks: [
         {
           type: 'image',
           image_url: gif.url,
-          alt_text: safeLabel(gif.title, 'KLIPY GIF preview'),
-          title: {
-            type: 'plain_text',
-            text: safeLabel(gif.title, 'KLIPY GIF')
-          }
+          alt_text: safeLabel(gif.title, 'KLIPY GIF preview')
         },
         {
           type: 'context',
@@ -398,7 +398,7 @@ slack.view('gif_preview_modal', async ({ ack, view, client }) => {
 async function start() {
   web.listen(port, () => console.log(`Health check: http://localhost:${port}/health`));
   await slack.start();
-  console.log('⚡ Slack Socket Mode connected — native inline picker ready');
+  console.log('⚡ Slack Socket Mode connected — compact 3x3 picker ready');
 }
 
 start().catch((error) => {
