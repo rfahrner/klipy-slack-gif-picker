@@ -18,7 +18,7 @@ if (!slackAppToken) throw new Error('Missing SLACK_APP_TOKEN');
 
 const web = express();
 web.get('/health', (_req, res) => {
-  res.json({ ok: true, slack: 'socket-mode', picker: 'modal-card' });
+  res.json({ ok: true, slack: 'socket-mode', picker: 'modal-card-compact' });
 });
 
 type PickerMode = 'recent' | 'search';
@@ -57,23 +57,13 @@ function pickerView(session: PickerSession): any {
       block_id: `gif-search-${session.id}-${Date.now()}`,
       dispatch_action: true,
       optional: true,
-      label: { type: 'plain_text', text: 'Search', emoji: true },
+      label: { type: 'plain_text', text: 'Search KLIPY', emoji: true },
       element: {
         type: 'plain_text_input',
         action_id: 'modal_gif_search',
         initial_value: session.query,
         placeholder: { type: 'plain_text', text: 'Search GIFs and press Enter' },
         dispatch_action_config: { trigger_actions_on: ['on_enter_pressed'] }
-      }
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text:
-          session.mode === 'recent'
-            ? '*Recently used*'
-            : `*Results for:* ${session.query.replace(/[<>]/g, '')}`
       }
     }
   ];
@@ -128,11 +118,6 @@ function pickerView(session: PickerSession): any {
     });
   }
 
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: '_Powered by KLIPY_' }]
-  });
-
   return {
     type: 'modal',
     callback_id: 'klipy_picker_modal',
@@ -154,7 +139,7 @@ function previewView(session: PickerSession, index: number): any {
       channelId: session.channelId,
       userId: session.userId
     }),
-    title: { type: 'plain_text', text: 'GIF Preview' },
+    title: { type: 'plain_text', text: 'KLIPY Preview' },
     close: { type: 'plain_text', text: 'Cancel' },
     submit: { type: 'plain_text', text: 'Send GIF' },
     blocks: [
@@ -162,10 +147,6 @@ function previewView(session: PickerSession, index: number): any {
         type: 'image',
         image_url: gif.url,
         alt_text: safeLabel(gif.title, 'KLIPY GIF preview')
-      },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: '_Powered by KLIPY_' }]
       }
     ]
   };
@@ -378,7 +359,7 @@ slack.view('gif_preview_modal', async ({ ack, view, client }) => {
 async function start() {
   web.listen(port, () => console.log(`Health check: http://localhost:${port}/health`));
   await slack.start();
-  console.log('⚡ Slack Socket Mode connected — modal card picker ready (up to 90 GIFs)');
+  console.log('⚡ Slack Socket Mode connected — compact modal picker ready');
 }
 
 start().catch((error) => {
