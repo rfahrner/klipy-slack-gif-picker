@@ -10,6 +10,7 @@ const klipyApiKey = process.env.KLIPY_API_KEY;
 const slackBotToken = process.env.SLACK_BOT_TOKEN;
 const slackAppToken = process.env.SLACK_APP_TOKEN;
 const BATCH_SIZE = 9;
+const MAX_MODAL_GIFS = 90;
 
 if (!klipyApiKey) throw new Error('Missing KLIPY_API_KEY');
 if (!slackBotToken) throw new Error('Missing SLACK_BOT_TOKEN');
@@ -17,7 +18,7 @@ if (!slackAppToken) throw new Error('Missing SLACK_APP_TOKEN');
 
 const web = express();
 web.get('/health', (_req, res) => {
-  res.json({ ok: true, slack: 'socket-mode', picker: 'modal' });
+  res.json({ ok: true, slack: 'socket-mode', picker: 'modal-card' });
 });
 
 type PickerMode = 'recent' | 'search';
@@ -93,30 +94,29 @@ function pickerView(session: PickerSession): any {
   } else {
     session.gifs.forEach((gif, index) => {
       blocks.push({
-        type: 'image',
-        block_id: `gif-image-${session.id}-${index}-${Date.now()}`,
-        image_url: gif.previewUrl || gif.url,
-        alt_text: safeLabel(gif.title, `GIF ${index + 1}`)
-      });
-
-      // Slack image blocks are display-only and cannot carry action_id.
-      // Keep the unavoidable interaction as small as possible.
-      blocks.push({
-        type: 'actions',
-        block_id: `gif-open-${session.id}-${index}-${Date.now()}`,
-        elements: [
-          {
-            type: 'button',
-            action_id: 'modal_gif_preview',
-            value: JSON.stringify({ sessionId: session.id, index }),
-            text: { type: 'plain_text', text: 'Open', emoji: true }
-          }
-        ]
+        type: 'card',
+        block_id: `gif-card-${session.id}-${index}-${Date.now()}`,
+        hero_image: {
+          type: 'image',
+          image_url: gif.previewUrl || gif.url,
+          alt_text: safeLabel(gif.title, `GIF ${index + 1}`)
+        },
+        actions: {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              action_id: 'modal_gif_preview',
+              value: JSON.stringify({ sessionId: session.id, index }),
+              text: { type: 'plain_text', text: 'Open', emoji: true }
+            }
+          ]
+        }
       });
     });
   }
 
-  if (session.hasMore && session.gifs.length < 36) {
+  if (session.hasMore && session.gifs.length < MAX_MODAL_GIFS) {
     blocks.push({
       type: 'actions',
       block_id: `gif-more-${session.id}-${Date.now()}`,
@@ -198,13 +198,13 @@ async function loadFirstBatch(session: PickerSession) {
 }
 
 async function loadMore(session: PickerSession) {
-  if (!session.hasMore) return;
+  if (!session.hasMore || session.gifs.length >= MAX_MODAL_GIFS) return;
 
   if (session.mode === 'recent') {
     const result = getRecentGifs(session.userId, session.recentOffset, BATCH_SIZE);
-    session.gifs.push(...result.gifs);
+    session.gifs.push(...result.gifs.slice(0, MAX_MODAL_GIFS - session.gifs.length));
     session.recentOffset += result.gifs.length;
-    session.hasMore = result.hasMore;
+    session.hasMore = result.hasMore && session.gifs.length < MAX_MODAL_GIFS;
     return;
   }
 
@@ -217,9 +217,9 @@ async function loadMore(session: PickerSession) {
     'US',
     'medium'
   );
-  session.gifs.push(...result.gifs);
+  session.gifs.push(...result.gifs.slice(0, MAX_MODAL_GIFS - session.gifs.length));
   session.page += 1;
-  session.hasMore = result.hasMore;
+  session.hasMore = result.hasMore && session.gifs.length < MAX_MODAL_GIFS;
 }
 
 const slack = new App({
@@ -381,7 +381,7 @@ slack.view('gif_preview_modal', async ({ ack, view, client }) => {
 async function start() {
   web.listen(port, () => console.log(`Health check: http://localhost:${port}/health`));
   await slack.start();
-  console.log('⚡ Slack Socket Mode connected — modal picker ready');
+  console.log('⚡ Slack Socket Mode connected — modal card picker ready (up to 90 GIFs)');
 }
 
 start().catch((error) => {
