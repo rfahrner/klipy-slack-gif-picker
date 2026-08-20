@@ -39,8 +39,6 @@ export async function searchKlipy(
 
   const body: any = await response.json();
 
-  // KLIPY v1 wraps search results under data.data.
-  // Keep a few fallbacks so the client stays resilient if the API shape evolves.
   const raw: any[] = Array.isArray(body?.data?.data)
     ? body.data.data
     : Array.isArray(body?.data?.items)
@@ -53,29 +51,21 @@ export async function searchKlipy(
 
   const gifs: KlipyGif[] = raw
     .map((item: any, i: number) => {
-      // Current KLIPY v1 media lives under file.{hd,md,sm,xs}.{gif,webp,...}
       const file = item?.file ?? {};
       const full = file?.md?.gif ?? file?.hd?.gif ?? file?.sm?.gif ?? file?.xs?.gif;
-      const preview =
-        file?.sm?.gif ??
-        file?.sm?.webp ??
-        file?.xs?.gif ??
-        file?.xs?.webp ??
-        full;
 
-      // Compatibility fallbacks for Tenor-like response variants.
       const media = item?.media_formats ?? item?.images ?? item?.media ?? {};
       const legacyFull = media?.gif ?? media?.gifpreview ?? media?.original ?? media?.preview ?? media;
-      const legacyPreview = media?.tinygif ?? media?.mediumgif ?? media?.gifpreview ?? legacyFull;
 
       const fullUrl = full?.url ?? legacyFull?.url ?? item?.url ?? item?.gif_url ?? item?.media_url ?? '';
-      const previewUrl = preview?.url ?? legacyPreview?.url ?? item?.preview_url ?? fullUrl;
 
       return {
         id: String(item?.id ?? item?.content_id ?? item?.slug ?? `${page}-${i}`),
         title: item?.title ?? item?.name ?? item?.content_description ?? item?.slug ?? '',
         url: fullUrl,
-        previewUrl,
+        // Use the actual animated GIF for picker cards too. Slack mobile may still
+        // choose to freeze card hero images, but this removes our static-thumbnail layer.
+        previewUrl: fullUrl,
         width: Number(full?.width ?? legacyFull?.dims?.[0] ?? legacyFull?.width ?? 0) || undefined,
         height: Number(full?.height ?? legacyFull?.dims?.[1] ?? legacyFull?.height ?? 0) || undefined
       };
