@@ -101,17 +101,14 @@ function pickerView(session: PickerSession): any {
           image_url: gif.previewUrl || gif.url,
           alt_text: safeLabel(gif.title, `GIF ${index + 1}`)
         },
-        actions: {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              action_id: 'modal_gif_preview',
-              value: JSON.stringify({ sessionId: session.id, index }),
-              text: { type: 'plain_text', text: 'Open', emoji: true }
-            }
-          ]
-        }
+        actions: [
+          {
+            type: 'button',
+            action_id: 'modal_gif_preview',
+            value: JSON.stringify({ sessionId: session.id, index }),
+            text: { type: 'plain_text', text: 'Open', emoji: true }
+          }
+        ]
       });
     });
   }
